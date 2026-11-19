@@ -14,6 +14,7 @@ import pandas as pd
 import db
 import generate_data
 from anomaly import detect_anomalies
+from fmt import inr
 from config import CURRENCY, HORIZON_HOURS, UPLOADED_CSV, USAGE_CSV
 from explain import explain, llm_configured
 from forecast import train_and_forecast
@@ -78,7 +79,7 @@ def run(csv_path=USAGE_CSV, use_llm: bool = True, regenerate: bool = False,
         if verbose:
             print(f"   {rec['action']:<8} {cpus} -> {rec['recommended_cpus']} vCPUs | "
                   f"MAE {rec['forecast_mae']} vs baseline {rec['baseline_mae']} | "
-                  f"saving {CURRENCY}{rec['monthly_saving']:,.2f}/mo")
+                  f"saving {inr(rec['monthly_saving'])}/mo")
 
     db.save_table(pd.concat(usage_rows), "usage")
     db.save_table(pd.concat(fc_rows), "forecasts")
@@ -88,7 +89,7 @@ def run(csv_path=USAGE_CSV, use_llm: bool = True, regenerate: bool = False,
     db.save_table(pd.DataFrame(recs), "recommendations")
     if verbose:
         total = sum(r["monthly_saving"] for r in recs if r["monthly_saving"] > 0)
-        print(f"\nDone. Potential savings: {CURRENCY}{total:,.2f}/month. Saved to {db.DB_PATH}")
+        print(f"\nDone. Potential savings: {inr(total)}/month. Saved to {db.DB_PATH}")
     return recs
 
 

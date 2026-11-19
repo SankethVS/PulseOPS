@@ -7,9 +7,12 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
+import cost_opt as co
 import dash_logic as dl
+import explain as ex
 import data_access as da
 from config import CURRENCY as CUR, USAGE_CSV
+from fmt import inr, inr_ticks
 
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 CYAN, BLUE, PURPLE, GREEN, AMBER, RED = "#22d3ee", "#3b82f6", "#8b5cf6", "#22c55e", "#f59e0b", "#ef4444"
@@ -39,6 +42,10 @@ div[class*="st-key-card"]{background:rgba(16,26,62,.55);border:1px solid rgba(80
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#22c55e;margin-right:6px;box-shadow:0 0 8px #22c55e;}
 .bell{position:relative;margin-left:18px;font-size:1.3rem;} .bell b{position:absolute;top:-8px;right:-10px;background:#ef4444;color:#fff;font-size:.68rem;border-radius:10px;padding:0 6px;}
 .brand{font-size:1.7rem;font-weight:800;background:linear-gradient(90deg,#22d3ee,#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.card-save{background:linear-gradient(135deg,rgba(10,110,70,.40),rgba(8,30,50,.55));border-color:rgba(34,197,94,.5);}
+.card-warn{border-color:rgba(245,158,11,.55);} .orange{color:#fbbf24;}
+.banner{background:linear-gradient(90deg,rgba(16,185,129,.22),rgba(59,130,246,.18));border:1px solid rgba(34,197,94,.45);border-radius:16px;padding:14px 18px;margin-bottom:12px;}
+.banner h3{margin:0;color:#fff;} .tag-sim{display:inline-block;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.4);border-radius:8px;padding:1px 8px;font-size:.75rem;}
 .badge{display:inline-block;padding:2px 10px;border-radius:999px;font-weight:700;font-size:.78rem;}
 </style>""", unsafe_allow_html=True)
 
@@ -50,7 +57,14 @@ def H(s: str) -> str:
 
 
 def money(x: float) -> str:
-    return f"{CUR}{x / 1000:,.1f}K" if abs(x) >= 1000 else f"{CUR}{x:,.0f}"
+    """Indian format (Thousand / Lakhs / Crores). Display only; see fmt.py."""
+    return inr(x, CUR)
+
+
+def money_axis(fig, vmin, vmax, axis="y"):
+    vals, txt = inr_ticks(vmin, vmax)
+    (fig.update_yaxes if axis == "y" else fig.update_xaxes)(tickvals=vals, ticktext=txt)
+    return fig
 
 
 def fetch(path: str, fallback):
@@ -261,23 +275,28 @@ def detail_dialog(kind):
                         config={"displayModeBar": False})
         t = r_[["server", "action", "current_cpus", "recommended_cpus", "forecast_peak_util", "util_after", "monthly_saving"]].copy()
         t["action"] = t.action.map(ACTION_LABEL)
+        t["monthly_saving"] = t.monthly_saving.map(money)
         st.dataframe(t.rename(columns={"current_cpus": "now", "recommended_cpus": "recommended", "forecast_peak_util": "peak %",
-                                       "util_after": "peak % after", "monthly_saving": f"saving/mo ({CUR})"}), hide_index=True)
+                                       "util_after": "peak % after", "monthly_saving": "saving / month"}), hide_index=True)
     elif kind in ("saving", "cost"):                          # ---- cost ----
         st.markdown("#### 💰 Where the money goes")
         note(f"Green bar = money saved by resizing. Red bar = extra cost to add capacity. Net saving: <b>{money(S['saving'])}/month</b>.")
         r_ = recs.sort_values("monthly_saving")
         f = go.Figure(go.Bar(y=r_.server, x=r_.monthly_saving, orientation="h", marker_color=[GREEN if v >= 0 else RED for v in r_.monthly_saving],
                              text=[money(v) for v in r_.monthly_saving], textposition="outside", textfont=dict(color="white")))
-        st.plotly_chart(style(f, 80 + 30 * len(r_), 100).update_layout(xaxis=dict(ticksuffix="", gridcolor="rgba(120,140,255,.1)"),
-                        yaxis=dict(range=None), hovermode="closest"), config={"displayModeBar": False})
+        money_axis(style(f, 80 + 30 * len(r_), 100).update_layout(xaxis=dict(ticksuffix="", gridcolor="rgba(120,140,255,.1)"),
+                        yaxis=dict(range=None), hovermode="closest"), min(0, r_.monthly_saving.min()), max(1, r_.monthly_saving.max() * 1.3), "x")
+        f.update_traces(hovertemplate="%{y}: %{text}<extra></extra>")
+        st.plotly_chart(f, config={"displayModeBar": False})
         c = r_.sort_values("monthly_saving", ascending=False)
         f = go.Figure(go.Waterfall(x=["Current"] + c.server.tolist() + ["Optimized"], measure=["absolute"] + ["relative"] * len(c) + ["total"],
                                    y=[S["cost_now"]] + (-c.monthly_saving).tolist() + [0], increasing=dict(marker_color=RED),
-                                   decreasing=dict(marker_color=GREEN), totals=dict(marker_color=CYAN)))
+                                   decreasing=dict(marker_color=GREEN), totals=dict(marker_color=CYAN),
+                                   text=[money(S["cost_now"])] + [money(-v) for v in c.monthly_saving] + [money(S["cost_new"])],
+                                   textposition="outside", hoverinfo="x+text"))
         st.markdown('<div class="ct">From current bill to optimized bill</div>', unsafe_allow_html=True)
-        st.plotly_chart(style(f, 300, S["cost_now"] * 1.1).update_layout(yaxis=dict(ticksuffix="", range=[0, S["cost_now"] * 1.1],
-                        gridcolor="rgba(120,140,255,.1)"), hovermode="closest"), config={"displayModeBar": False})
+        st.plotly_chart(money_axis(style(f, 300, S["cost_now"] * 1.1).update_layout(yaxis=dict(ticksuffix="", range=[0, S["cost_now"] * 1.1],
+                        gridcolor="rgba(120,140,255,.1)"), hovermode="closest"), 0, S["cost_now"] * 1.1), config={"displayModeBar": False})
     elif kind == "anom":                                      # ---- anomalies ----
         st.markdown("#### ⚠️ Unusual spikes")
         note("A spike = CPU far above that server's normal level for that hour of the week.")
@@ -300,7 +319,7 @@ def detail_dialog(kind):
 recs_raw = fetch("/recommendations", da.get_recommendations)
 with st.sidebar:
     st.markdown('<div class="brand">☁️ AIOps</div>', unsafe_allow_html=True)
-    page = st.radio("Navigate", ["📊 Dashboard", "📈 Forecast", "🔔 Alerts", "💡 Recommendations"],
+    page = st.radio("Navigate", ["📊 Dashboard", "💰 Cost Optimization", "📈 Forecast", "🔔 Alerts", "💡 Recommendations"],
                     label_visibility="collapsed")
     st.markdown("---")
     API_OK = backend_online()
@@ -351,14 +370,6 @@ st.markdown(H(f'''<div class="topbar"><h2>Server Capacity Planner</h2><div class
 def page_dashboard():
     avg_cpu = fl["hist_avg"].iloc[-24:].mean()
     RES = dl.resources(fl["hist_avg"])
-    st.markdown('<div class="ct">Live Resource Health <span class="muted">(CPU measured · Memory, I/O, Disk simulated from CPU)</span></div>', unsafe_allow_html=True)
-    g = st.columns(4)
-    for col_, k in zip(g, ("cpu", "mem", "io", "disk")):
-        with col_, st.container(key=f"card_g_{k}"):
-            ic, nm, _ = dl.RES_META[k]
-            st.plotly_chart(gauge(RES[k].iloc[-1], RES[k].iloc[-25], f"{ic} {nm}", k), config={"displayModeBar": False})
-            dbtn(k)
-    st.write("")
     c = st.columns(4)
     c[0].markdown(kpi("🖥️", S["n"], "Total Servers", f"{S['up']} need more capacity"), unsafe_allow_html=True)
     with c[0]:
@@ -376,6 +387,32 @@ def page_dashboard():
         dbtn("saving")
     st.write("")
 
+    st.write("")
+    with st.container(key="card_cost"):
+        st.markdown('<div class="ct">Cost Analysis <span class="muted">(per month)</span></div>', unsafe_allow_html=True)
+        k1, k2 = st.columns([3, 1.4])
+        f = go.Figure(go.Bar(x=["Current", "Optimized"], y=[S["cost_now"], S["cost_new"]], marker_color=["#6b7bb8", GREEN], width=0.5, hovertemplate="%{x}: %{text}<extra></extra>",
+                             text=[money(S["cost_now"]), money(S["cost_new"])], textposition="outside",
+                             textfont=dict(color="white")))
+        f.update_layout(height=210, margin=dict(l=0, r=0, t=22, b=0), paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2fe"), yaxis=dict(visible=False, range=[0, S["cost_now"] * 1.25]))
+        with k1:
+            show(f)
+        k2.markdown(H(f'<div class="card" style="margin-top:20px"><b>Estimated Savings</b>'
+                      f'<div class="big green">{S["saving_pct"]:.0f}%</div><div class="muted">({money(S["saving"])} with AI)</div></div>'),
+                    unsafe_allow_html=True)
+        dbtn("cost")
+
+    st.write("")
+    st.markdown('<div class="ct">Live Resource Health <span class="muted">(CPU measured · Memory, I/O, Disk simulated from CPU)</span></div>', unsafe_allow_html=True)
+    g = st.columns(4)
+    for col_, k in zip(g, ("cpu", "mem", "io", "disk")):
+        with col_, st.container(key=f"card_g_{k}"):
+            ic, nm, _ = dl.RES_META[k]
+            st.plotly_chart(gauge(RES[k].iloc[-1], RES[k].iloc[-25], f"{ic} {nm}", k), config={"displayModeBar": False})
+            dbtn(k)
+    st.write("")
+    st.write("")
     a, b, c3 = st.columns([5, 5, 3.2])
     with a, st.container(key="card_util"):
         st.markdown('<div class="ct">Resource Utilization <span class="muted">(last 48h)</span></div>', unsafe_allow_html=True)
@@ -436,21 +473,7 @@ def page_dashboard():
 
     st.write("")
     a, b = st.columns(2)
-    with a, st.container(key="card_cost"):
-        st.markdown('<div class="ct">Cost Analysis <span class="muted">(per month)</span></div>', unsafe_allow_html=True)
-        k1, k2 = st.columns([3, 2])
-        f = go.Figure(go.Bar(x=["Current", "Optimized"], y=[S["cost_now"], S["cost_new"]], marker_color=["#6b7bb8", GREEN], width=0.5, hovertemplate="%{x}: %{text}<extra></extra>",
-                             text=[money(S["cost_now"]), money(S["cost_new"])], textposition="outside",
-                             textfont=dict(color="white")))
-        f.update_layout(height=210, margin=dict(l=0, r=0, t=22, b=0), paper_bgcolor="rgba(0,0,0,0)",
-                        plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2fe"), yaxis=dict(visible=False, range=[0, S["cost_now"] * 1.25]))
-        with k1:
-            show(f)
-        k2.markdown(H(f'<div class="card" style="margin-top:20px"><b>Estimated Savings</b>'
-                      f'<div class="big green">{S["saving_pct"]:.0f}%</div><div class="muted">({money(S["saving"])} with AI)</div></div>'),
-                    unsafe_allow_html=True)
-        dbtn("cost")
-    with b, st.container(key="card_status"):
+    with a, st.container(key="card_status"):
         st.markdown('<div class="ct">Server Status</div>', unsafe_allow_html=True)
         k1, k2 = st.columns([3, 2])
         k1.markdown(H(f'''<div class="row">🟢 <span style="width:120px">Healthy</span><b>{S["keep"]}</b></div>
@@ -466,6 +489,15 @@ def page_dashboard():
         with k2:
             show(f)
         dbtn("status")
+
+
+    with b:
+        top = recs.sort_values("monthly_saving", ascending=False).iloc[0]
+        st.markdown(H(f'<div class="card card-save"><div class="ct">💰 Cost Optimization</div>'
+                      f'<div class="muted">Biggest saving: <b>{top.server}</b> ({top.current_cpus} → {top.recommended_cpus} vCPUs)</div>'
+                      f'<div class="big green">{money(top.monthly_saving)}</div>'
+                      f'<div class="muted">per month · open <b>Cost Optimization</b> in the sidebar for AI explanations</div></div>'),
+                    unsafe_allow_html=True)
 
 
 # ====================== FORECAST ======================
@@ -523,13 +555,125 @@ def page_reco():
         col = ACTION_COLOR[r.action]
         delta = (f'saves <b class="green">{money(r.monthly_saving)}</b>/mo' if r.monthly_saving > 0 else
                  f'costs <b class="red">{money(-r.monthly_saving)}</b> more/mo' if r.monthly_saving < 0 else "no change")
+        expl = r.explanation if r.explanation_source == "llm" else ex.template_explanation(r.to_dict())
         tag = "" if r.explanation_source == "llm" else " <span class='muted'>(template explanation)</span>"
         st.markdown(H(f'''<div class="card" style="margin-bottom:12px;border-left:4px solid {col}">
             <span class="ct">{r.server}</span> &nbsp;<span class="badge" style="background:{col}33;color:{col}">{r.action} · {ACTION_LABEL[r.action]}</span>
             <div class="big" style="font-size:1.3rem">{r.current_cpus} → {r.recommended_cpus} vCPUs &nbsp;<span class="muted">{delta}</span></div>
             <div class="muted">Forecast peak {r.forecast_peak_util}% · average {r.forecast_avg_util}% · peak after resize {r.util_after}%</div>
-            <div style="margin-top:8px">{r.explanation}{tag}</div></div>'''), unsafe_allow_html=True)
+            <div style="margin-top:8px">{expl}{tag}</div></div>'''), unsafe_allow_html=True)
 
 
-{"📊 Dashboard": page_dashboard, "📈 Forecast": page_forecast,
+# ====================== COST OPTIMIZATION ======================
+@st.cache_data(ttl=600, show_spinner=False)
+def _peaks(servers: tuple):
+    d = server_hist(servers, 14)
+    return d.groupby("server").cpu_percent.max().to_dict()
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _llm_cached(kind: str, facts_json: str, fallback: str):
+    import json
+    return ex.llm_text(kind, json.loads(facts_json), fallback)
+
+
+def _set_status(server, status):
+    st.session_state.setdefault("opt_status", {})[server] = status
+
+
+def page_cost():
+    import json
+    stt = st.session_state.setdefault("opt_status", {})
+    t = co.build_table(recs, _peaks(tuple(recs.server)))
+    tot = co.totals(t)
+    st.markdown(H(f'<div class="banner"><h3>💰 Cost Optimization <span class="tag-sim">{src}</span></h3>'
+                  f'<div class="muted">Where are we wasting money, and what can we safely cut? All figures are calculated in Python from the '
+                  f'recommendation engine; the AI only explains them. Only CPU is measured: Memory, I/O and Disk are simulated and are '
+                  f'<b>not</b> used for any recommendation.</div></div>'), unsafe_allow_html=True)
+
+    c = st.columns(4)
+    c[0].markdown(kpi("🏢", money(tot["cost_now"]), "Current Monthly Infrastructure Cost", f"{tot['n']} servers"), unsafe_allow_html=True)
+    c[1].markdown(H(f'<div class="card card-save"><div class="kpi"><div class="ic">💚</div><div><div class="val green">{money(tot["gross_saving"])}</div>'
+                    f'<div class="lbl">Potential Monthly Savings</div><div class="sub">before {money(tot["extra_for_capacity"])} for capacity additions</div></div></div></div>'),
+                  unsafe_allow_html=True)
+    c[2].markdown(kpi("📉", money(tot["cost_new"]), "Optimized Projected Monthly Cost", "after all recommendations"), unsafe_allow_html=True)
+    c[3].markdown(kpi("🎯", tot["n_candidates"], "Servers Suitable for Optimization", f"{tot['n_review']} need a peak-traffic review"), unsafe_allow_html=True)
+    st.write("")
+
+    appr = [s_ for s_, v in stt.items() if v == "Approved"]
+    approved_val = float(t[t.server.isin(appr)].saving.sum())
+    r1, r2, r3 = st.columns(3)
+    r1.markdown(H(f'<div class="card"><div class="muted">Potential savings (identified)</div><div class="big">{money(tot["gross_saving"])}</div></div>'), unsafe_allow_html=True)
+    r2.markdown(H(f'<div class="card card-warn"><div class="muted">Approved, not yet applied</div><div class="big orange">{money(approved_val)}</div>'
+                  f'<div class="muted">{len(appr)} server(s) approved</div></div>'), unsafe_allow_html=True)
+    r3.markdown(H(f'<div class="card"><div class="muted">Realized savings</div><div class="big">{money(0)}</div>'
+                  f'<div class="muted">Demo only: no cloud changes are made, so nothing is realized.</div></div>'), unsafe_allow_html=True)
+    st.write("")
+
+    # ---- LLM controls ----
+    use_llm = st.session_state.get("cost_llm", False)
+    b1, b2 = st.columns([1, 3])
+    if ex.llm_configured():
+        if b1.button("✨ Generate AI explanations", type="primary"):
+            st.session_state["cost_llm"] = use_llm = True
+        b2.caption("Explanations are written by the configured LLM from the calculated figures; if it fails, a built-in explanation is shown.")
+    else:
+        b2.info("No LLM configured (set LLM_PROVIDER / LLM_API_KEY, see .env.example). Showing built-in explanations from the same calculated data.")
+
+    sf = co.summary_facts(t, tot)
+    fb = co.summary_fallback(sf)
+    text, how = _llm_cached("summary", json.dumps(sf), fb) if use_llm else (fb, "fallback")
+    label = "AI-generated" if how == "llm" else "built-in summary"
+    st.markdown(H(f'<div class="card card-save"><div class="ct">🤖 Overall AI Cost Saving Insights <span class="muted">({label})</span></div>'
+                  f'<div style="margin-top:6px">{text}</div></div>'.replace("\n", "<br>")), unsafe_allow_html=True)
+    if use_llm and how != "llm":
+        st.warning("The LLM was unavailable, so a built-in summary is shown.")
+    st.write("")
+
+    # ---- table ----
+    st.markdown('<div class="ct">Server-wise cost optimization</div>', unsafe_allow_html=True)
+    show_t = pd.DataFrame({
+        "Server": [("⭐ " if p else "") + s_ for s_, p in zip(t.server, t.priority)],
+        "Current vCPU": t.current_cpus, "Avg CPU %": t.avg_cpu, "Peak CPU %": t.peak_cpu,
+        "Current cost / mo": t.cost_now.map(money), "Recommended vCPU": t.recommended_cpus,
+        "Optimized cost / mo": t.cost_new.map(money),
+        "Potential saving / mo": t.saving.map(money),
+        "Status": [stt.get(s_, "Pending") + " · " + l for s_, l in zip(t.server, t.status_label)]})
+    color = {"RECOMMENDED": "background-color:rgba(34,197,94,.22)", "REVIEW": "background-color:rgba(245,158,11,.22)",
+             "AVOID": "background-color:rgba(239,68,68,.22)", "OPTIMAL": ""}
+    sty = show_t.style.apply(lambda r_: [color[t.verdict.iloc[r_.name]]] * len(r_), axis=1)
+    st.dataframe(sty, hide_index=True)
+    st.caption("⭐ = top three to investigate first. Green = downsize recommended · Orange = review peak traffic first · Red = capacity risk. "
+               "Avg CPU is measured over the loaded history; Peak CPU over the last 14 days.")
+
+    # ---- per-server advisor ----
+    st.markdown('<div class="ct" style="margin-top:12px">🤖 LLM-powered Cost Saving Advisor</div>', unsafe_allow_html=True)
+    vcol = {"RECOMMENDED": GREEN, "REVIEW": AMBER, "AVOID": RED, "OPTIMAL": CYAN}
+    for r in t.itertuples():
+        f = co.server_facts(r)
+        fb = co.server_fallback(r)
+        text, how = _llm_cached("server", json.dumps(f), fb) if use_llm else (fb, "fallback")
+        col = vcol[r.verdict]
+        cur = stt.get(r.server, "Pending")
+        d = (f'saves <b class="green">{money(r.saving)}</b>/mo' if r.saving > 0 else
+             f'costs <b class="red">{money(-r.saving)}</b> more/mo' if r.saving < 0 else "no change")
+        st.markdown(H(f'''<div class="card" style="margin-bottom:6px;border-left:4px solid {col}">
+            <span class="ct">{r.server}</span> &nbsp;<span class="badge" style="background:{col}33;color:{col}">{r.status_label}</span>
+            <span class="badge" style="background:rgba(59,130,246,.2);color:#93c5fd">{cur}</span>
+            <div class="big" style="font-size:1.25rem">{r.current_cpus} → {r.recommended_cpus} vCPUs &nbsp;<span class="muted">{d}</span></div>
+            <div class="muted">Avg {r.avg_cpu:.0f}% · observed peak {r.peak_cpu:.0f}% · forecast peak {r.forecast_peak:.0f}% · peak after resize {r.util_after:.0f}%</div>
+            <div style="margin-top:8px">{text}</div>
+            <div class="muted" style="margin-top:4px">{"AI-generated" if how == "llm" else "built-in explanation"}</div></div>'''), unsafe_allow_html=True)
+        if r.verdict != "OPTIMAL":
+            a1, a2, a3, _ = st.columns([1.3, 1, 1, 4])
+            a1.button("🔍 Review Recommendation", key=f"rv_{r.server}", on_click=_set_status, args=(r.server, "Under review"))
+            a2.button("✅ Approve", key=f"ap_{r.server}", type="primary", on_click=_set_status, args=(r.server, "Approved"))
+            a3.button("✖ Reject", key=f"rj_{r.server}", on_click=_set_status, args=(r.server, "Rejected"))
+            if cur == "Under review":
+                st.caption(f"Checklist: confirm peak traffic windows, keep alerts on, apply during the quietest hours. "
+                           f"Observed peak would be ≈{r.hist_peak_after:.0f}% at the new size.")
+        st.write("")
+
+
+{"📊 Dashboard": page_dashboard, "💰 Cost Optimization": page_cost, "📈 Forecast": page_forecast,
  "🔔 Alerts": page_alerts, "💡 Recommendations": page_reco}[page]()

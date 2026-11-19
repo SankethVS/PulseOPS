@@ -10,6 +10,7 @@ import streamlit as st
 
 import data_access as da
 from config import CURRENCY as CUR
+from fmt import inr
 
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 GREEN, AMBER, RED, BLUE, GREY = "#2e9e5b", "#e8a317", "#d64545", "#2f6fed", "#8a94a6"
@@ -68,10 +69,10 @@ savings = recs.loc[recs.monthly_saving > 0, "monthly_saving"].sum()
 extra = -recs.loc[recs.monthly_saving < 0, "monthly_saving"].sum()
 total_now = recs.monthly_cost_now.sum()
 k1, k2, k3, k4 = st.columns(4)
-k1.metric("Potential monthly savings", f"{CUR}{savings:,.0f}", f"{savings / total_now:.0%} of current bill")
+k1.metric("Potential monthly savings", inr(savings), f"{savings / total_now:.0%} of current bill")
 k2.metric("Servers to downsize", int((recs.action == "DOWNSIZE").sum()))
 k3.metric("Servers at risk (upsize)", int((recs.action == "UPSIZE").sum()),
-          f"+{CUR}{extra:,.0f}/mo to stay safe" if extra else None, delta_color="inverse")
+          f"+{inr(extra)}/mo to stay safe" if extra else None, delta_color="inverse")
 k4.metric("Avg forecast error (MAE)", f"{recs.forecast_mae.mean():.1f}% CPU",
           f"vs {recs.baseline_mae.mean():.1f}% for 'repeat last week'", delta_color="off")
 
@@ -131,7 +132,7 @@ with tab1:
     m1.metric("Forecast peak", f"{rec.forecast_peak_util}%")
     m2.metric("Peak + safety margin", f"{rec.safe_peak_util}%")
     m3.metric("Peak after resize", f"{rec.util_after}%")
-    m4.metric("Monthly saving", f"{CUR}{rec.monthly_saving:,.0f}")
+    m4.metric("Monthly saving", inr(rec.monthly_saving))
     st.caption(f"{int(rec.anomaly_count)} unusual spikes detected in the full history (Isolation Forest).")
 
 with tab2:
