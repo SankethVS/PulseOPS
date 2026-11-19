@@ -85,3 +85,23 @@ def latest_anomaly(fl: dict):
     r = fl["an"].iloc[-1]
     return {"server": r.server, "ts": r.timestamp, "cpu": float(r.cpu_percent),
             "typical": float(r.cpu_percent - r.deviation)}
+
+
+# ---------- resource metrics (CPU is real; the rest are SIMULATED from CPU, dataset has CPU only) ----------
+RES_META = {
+    "cpu":  ("⚙️", "CPU Usage", "Share of processor time in use across the fleet (weighted by vCPUs)."),
+    "mem":  ("🧠", "Memory", "RAM in use. Moves slower than CPU because caches and buffers hold data."),
+    "io":   ("🔁", "Disk I/O", "Disk read/write activity as % of throughput capacity. Follows busy hours."),
+    "disk": ("💽", "Disk Usage", "Storage space used. It only grows slowly, so watch the trend, not the hourly wiggle."),
+}
+
+
+def resources(hist_avg: pd.Series) -> dict:
+    """Return {cpu, mem, io, disk} hourly % series. Only 'cpu' is measured; others are derived (demo)."""
+    import numpy as np
+    n, t, rng = len(hist_avg), np.arange(len(hist_avg)), np.random.default_rng(7)
+    mk = lambda v: pd.Series(np.clip(v, 1, 99), index=hist_avg.index)
+    return {"cpu": hist_avg,
+            "mem": mk(36 + 0.45 * hist_avg.rolling(6, min_periods=1).mean().values + 3 * np.sin(t / 9) + rng.normal(0, 1, n)),
+            "io": mk(12 + 0.85 * hist_avg.values + rng.normal(0, 5, n)),
+            "disk": mk(58 + t * 0.04 + rng.normal(0, 0.15, n))}

@@ -5,6 +5,7 @@ If no key is set or the call fails, a built-in template is used, so the demo NEV
 """
 import json
 import os
+import time
 import requests
 from config import CURRENCY as CUR
 
@@ -14,7 +15,7 @@ API_KEY = os.getenv("LLM_API_KEY", "")
 
 DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-5-5",
-    "gemini": "gemini-2.0-flash",
+    "gemini": "gemini-3.6-flash",   # gemini-2.0-flash was shut down on 1 Jun 2026
     "openai": "gpt-4o-mini",
     "ollama": "llama3.2",
 }
@@ -70,11 +71,18 @@ def _call_llm(prompt: str) -> str:
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"].strip()
     if PROVIDER == "gemini":
+        # Key goes in a header (not the URL) so it can never show up in logs or error messages.
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        r = requests.post(url, timeout=30, params={"key": API_KEY},
-                          json={"contents": [{"parts": [{"text": prompt}]}]})
+        r = None
+        for attempt in range(3):                      # retry on rate-limit / temporary overload
+            r = requests.post(url, timeout=30, headers={"x-goog-api-key": API_KEY},
+                              json={"contents": [{"parts": [{"text": prompt}]}]})
+            if r.status_code not in (429, 500, 503):
+                break
+            time.sleep(2 ** attempt * 2)              # 2s, 4s, 8s
         r.raise_for_status()
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        parts = r.json()["candidates"][0]["content"]["parts"]
+        return "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
     if PROVIDER == "ollama":  # offline AI on your own laptop (only if the hackathon allows)
         host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
         r = requests.post(f"{host}/api/generate", timeout=120,
@@ -90,5 +98,6 @@ def explain(rec: dict, use_llm: bool = True) -> tuple[str, str]:
         try:
             return _call_llm(_prompt(rec)), "llm"
         except Exception as e:
-            print(f"  (LLM failed for {rec['server']}: {e}; using template)")
+            msg = str(e).replace(API_KEY, "***") if API_KEY else str(e)   # never print the key
+            print(f"  (LLM failed for {rec['server']}: {msg}; using template)")
     return template_explanation(rec), "template"
