@@ -1,0 +1,24 @@
+# Start everything with:  docker compose up --build
+# Then open  http://localhost:8501  (dashboard)  and  http://localhost:8000/docs  (API)
+services:
+  api:
+    build: .
+    command: sh -c "python run_pipeline.py --regenerate && uvicorn api:app --host 0.0.0.0 --port 8000"
+    ports: ["8000:8000"]
+    environment:
+      DB_PATH: /data/results.db
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+    volumes: ["dbdata:/data"]
+  dashboard:
+    build: .
+    command: streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
+    ports: ["8501:8501"]
+    environment:
+      API_URL: http://api:8000
+      DB_PATH: /data/results.db
+    volumes: ["dbdata:/data"]
+    depends_on: [api]
+volumes:
+  dbdata:
