@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ PulseOPS
+# ⚡ OptiScale AI
 
 ### *Anveshan: The Clear Picture*
 **Stop paying for servers nobody uses.**
@@ -38,7 +38,7 @@ Meanwhile, the usage data that could fix this just sits there, never used.
 
 ## 💡 The Solution
 
-PulseOPS reads each server's past CPU usage and does four things:
+OptiScale AI reads each server's past CPU usage and does four things:
 
 | Step | What happens | Tool |
 |:---:|---|---|
